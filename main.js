@@ -67,52 +67,66 @@ class SoundboardPlugin extends obsidian.Plugin {
     createSoundboardGrid(sourcePath) {
         const container = document.createElement('div');
         container.className = 'soundboard-grid';
-
+    
+        // Extract the folder path of the note
+        const noteFolderPath = sourcePath.substring(0, sourcePath.lastIndexOf('/'));
+    
         this.audioStates[sourcePath].forEach(sound => {
             const soundElement = document.createElement('div');
             soundElement.className = 'soundboard-sound';
             soundElement.dataset.playing = sound.playing ? "true" : "false";
-
-          if (sound.image) {
-                const imagePath = sound.image.startsWith('[[') && sound.image.endsWith(']]') ?
-                  this.app.vault.getResourcePath(this.app.vault.getAbstractFileByPath(sound.image.slice(2, -2))) :
-                  sound.image;
     
-                const imageContainer = document.createElement('div');
-                imageContainer.className = 'soundboard-image-container';
+            if (sound.image) {
+                let imagePath;
+                
+                // Resolve image path considering Obsidian's way of handling file paths
+                const relativePath = sound.image.slice(2, -2); // Remove [[ and ]]
+                const file = this.app.vault.getAbstractFileByPath(relativePath);
+                
+                if (file) {
+                    imagePath = this.app.vault.getResourcePath(file);
+                } else {
+                    // Handle if image is in the current note's folder
+                    const fallbackPath = `${noteFolderPath}/${relativePath}`;
+                    const fallbackFile = this.app.vault.getAbstractFileByPath(fallbackPath);
     
-                const image = document.createElement('img');
-                image.src = imagePath;
-                image.alt = sound.name;
-                image.className = 'soundboard-image';
+                    if (fallbackFile) {
+                        imagePath = this.app.vault.getResourcePath(fallbackFile);
+                    } else {
+                        console.error(`Image not found: ${relativePath}`);
+                    }
+                }
     
-                imageContainer.appendChild(image);
-                soundElement.appendChild(imageContainer);
+                if (imagePath) {
+                    const imageContainer = document.createElement('div');
+                    imageContainer.className = 'soundboard-image-container';
+    
+                    const image = document.createElement('img');
+                    image.src = imagePath;
+                    image.alt = sound.name;
+                    image.className = 'soundboard-image';
+    
+                    imageContainer.appendChild(image);
+                    soundElement.appendChild(imageContainer);
+                }
             }
-            
-            const text = document.createElement('span');
-            text.className = 'soundboard-text';
-            text.textContent = sound.playing ? "Pause" : sound.name;
-            soundElement.appendChild(text);
-
+    
             soundElement.addEventListener('click', () => {
                 if (soundElement.dataset.playing === "false") {
                     sound.audio.play();
                     soundElement.dataset.playing = "true";
                     sound.playing = true;
-                    text.textContent = "Pause";
                     if (!sound.loop) {
                         sound.audio.addEventListener('ended', () => {
                             soundElement.dataset.playing = "false";
                             sound.playing = false;
-                            text.textContent = sound.name;
+
                         }, {once: true});
                     }
                 } else {
                     sound.audio.pause();
                     soundElement.dataset.playing = "false";
                     sound.playing = false;
-                    text.textContent = sound.name;
                 }
             });
 
