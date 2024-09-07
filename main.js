@@ -5,30 +5,25 @@ class SoundboardPlugin extends obsidian.Plugin {
         this.audioStates = {};
 
         this.registerMarkdownCodeBlockProcessor('soundboard', async (source, el, ctx) => {
-            const sourceChanged = this.audioStates[ctx.sourcePath] &&
-                JSON.stringify(this.audioStates[ctx.sourcePath].map(({name, url, image, loop, volume}) => ({name, url, image, loop, volume}))) !== JSON.stringify(this.parseSoundboard(source).map(({name, url, image, loop, volume}) => ({name, url, image, loop, volume})));
+            const currentPath = ctx.sourcePath;
 
-            if (!this.audioStates[ctx.sourcePath] || sourceChanged) {
-                if (sourceChanged) {
-                    this.stopAudioByPath(ctx.sourcePath);
-                }
-                
-                const parsedSounds = this.parseSoundboard(source);
-                this.audioStates[ctx.sourcePath] = parsedSounds.map(sound => ({
-                    ...sound,
-                    playing: false,
-                    audio: this.createConfiguredAudio(sound)
-                }));
-            }
+            // Parse and initialize new sounds
+            const parsedSounds = this.parseSoundboard(source);
+            this.audioStates[currentPath] = parsedSounds.map(sound => ({
+                ...sound,
+                playing: false,
+                audio: this.createConfiguredAudio(sound),
+            }));
 
             // Clear previous content
             el.innerHTML = '';
-            const gridContainer = this.createSoundboardGrid(ctx.sourcePath);
+            const gridContainer = this.createSoundboardGrid(currentPath);
             el.appendChild(gridContainer);
-            
+
+            // Handle cleanup on unload
             ctx.addChild({
                 onload: () => {},
-                onunload: () => this.stopAudioByPath(ctx.sourcePath),
+                onunload: () => this.stopAudioByPath(currentPath),
             });
         });
     }
@@ -53,10 +48,18 @@ class SoundboardPlugin extends obsidian.Plugin {
         let audioSource;
         if (sound.url.startsWith('[[') && sound.url.endsWith(']]')) {
             const relativePath = sound.url.slice(2, -2);
-            audioSource = this.app.vault.getResourcePath(this.app.vault.getAbstractFileByPath(relativePath));
+            const file = this.app.vault.getAbstractFileByPath(relativePath);
+            if (file) {
+                audioSource = this.app.vault.getResourcePath(file);
+            } else {
+                console.error(`File not found: ${relativePath}`);
+                return null;
+            }
         } else {
             audioSource = sound.url;
         }
+
+        console.log(`Creating audio for: ${audioSource}`); // Debugging line
 
         const audio = new Audio(audioSource);
         audio.loop = sound.loop;
@@ -67,67 +70,49 @@ class SoundboardPlugin extends obsidian.Plugin {
     createSoundboardGrid(sourcePath) {
         const container = document.createElement('div');
         container.className = 'soundboard-grid';
-    
-        // Extract the folder path of the note
+
         const noteFolderPath = sourcePath.substring(0, sourcePath.lastIndexOf('/'));
-    
+
         this.audioStates[sourcePath].forEach(sound => {
             const soundElement = document.createElement('div');
             soundElement.className = 'soundboard-sound';
             soundElement.dataset.playing = sound.playing ? "true" : "false";
-    
+
             if (sound.image) {
                 let imagePath;
-                
-                // Resolve image path considering Obsidian's way of handling file paths
-                const relativePath = sound.image.slice(2, -2); // Remove [[ and ]]
+
+                const relativePath = sound.image.slice(2, -2);
                 const file = this.app.vault.getAbstractFileByPath(relativePath);
-                
+
                 if (file) {
                     imagePath = this.app.vault.getResourcePath(file);
                 } else {
-                    // Handle if image is in the current note's folder
                     const fallbackPath = `${noteFolderPath}/${relativePath}`;
                     const fallbackFile = this.app.vault.getAbstractFileByPath(fallbackPath);
-    
+
                     if (fallbackFile) {
                         imagePath = this.app.vault.getResourcePath(fallbackFile);
                     } else {
                         console.error(`Image not found: ${relativePath}`);
                     }
                 }
-    
+
                 if (imagePath) {
                     const imageContainer = document.createElement('div');
                     imageContainer.className = 'soundboard-image-container';
-    
+
                     const image = document.createElement('img');
                     image.src = imagePath;
                     image.alt = sound.name;
                     image.className = 'soundboard-image';
-    
+
                     imageContainer.appendChild(image);
                     soundElement.appendChild(imageContainer);
                 }
             }
-    
-            soundElement.addEventListener('click', () => {
-                if (soundElement.dataset.playing === "false") {
-                    sound.audio.play();
-                    soundElement.dataset.playing = "true";
-                    sound.playing = true;
-                    if (!sound.loop) {
-                        sound.audio.addEventListener('ended', () => {
-                            soundElement.dataset.playing = "false";
-                            sound.playing = false;
 
-                        }, {once: true});
-                    }
-                } else {
-                    sound.audio.pause();
-                    soundElement.dataset.playing = "false";
-                    sound.playing = false;
-                }
+            soundElement.addEventListener('click', () => {
+                this.handleSoundClick(sound, soundElement, sourcePath);
             });
 
             container.appendChild(soundElement);
@@ -135,11 +120,63 @@ class SoundboardPlugin extends obsidian.Plugin {
 
         return container;
     }
-    
+
+    handleSoundClick(sound, element, sourcePath) {
+        // Pause all other sounds in the current soundboard
+        this.audioStates[sourcePath].forEach(s => {
+            if (s !== sound && s.audio) {
+                this.stopSound(s);
+                const elem = document.querySelector(`[data-sound-name="${s.name}"]`);
+                if (elem) elem.dataset.playing = "false";
+            }
+        });
+
+        // Play or pause the selected sound
+        if (element.dataset.playing === "false") {
+            this.playSound(sound, element);
+        } else {
+            this.pauseSound(sound, element);
+        }
+    }
+
+    playSound(sound, element) {
+        if (sound.audio) {
+            this.stopSound(sound); // Ensure any previously playing sound is stopped
+            sound.audio.play().catch(error => {
+                console.error(`Error playing sound: ${error}`);
+            });
+            element.dataset.playing = "true";
+            sound.playing = true;
+            if (!sound.loop) {
+                sound.audio.addEventListener('ended', () => {
+                    element.dataset.playing = "false";
+                    sound.playing = false;
+                }, {once: true});
+            }
+        } else {
+            console.error('No audio object available for this sound.');
+        }
+    }
+
+    pauseSound(sound, element) {
+        if (sound.audio) {
+            this.stopSound(sound); // Stop the sound and reset playback
+            element.dataset.playing = "false";
+            sound.playing = false;
+        }
+    }
+
+    stopSound(sound) {
+        if (sound.audio) {
+            sound.audio.pause();
+            sound.audio.currentTime = 0; // Reset to start
+        }
+    }
+
     stopAudioByPath(sourcePath) {
         if (this.audioStates[sourcePath]) {
             this.audioStates[sourcePath].forEach(sound => {
-                sound.audio.pause();
+                this.stopSound(sound);
                 sound.audio.src = "";
                 sound.playing = false;
             });
